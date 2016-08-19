@@ -1,0 +1,65 @@
+.compile_template: &howto_compile
+  stage: build
+  script:
+  - sed -i -e 's:--dirty ::' scripts/version
+  - sed -i -e 's:--dirty ::' configure.ac
+  - autoreconf -i
+  - ./configure --with-seccomp
+  - make -j$(nproc)
+  - ./jq --version
+  - objdump -p jq | grep -F NEEDED
+  artifacts:
+    expire_in: 4 weeks
+    paths:
+    - jq
+
+.test_template: &howto_test
+  stage: test
+  image: blitznote/debootstrap-amd64:16.04
+  script:
+  - "curl --silent --show-error --fail --location --header 'Accept: application/json' https://api.github.com/repos/syncthing/syncthing/releases/latest >some.json"
+  - ./jq -r '.assets[] | select(.name | contains("linux")) | select(.name | contains("amd64")) | select(.browser_download_url | contains(".tar")) | .browser_download_url' some.json
+  - cat some.json | ./jq -r '.assets[] | select(.name | contains("linux")) | select(.name | contains("amd64")) | select(.browser_download_url | contains(".tar")) | .browser_download_url'
+
+compile:
+  <<: *howto_compile
+
+compile:with_onig:
+  <<: *howto_compile
+  before_script:
+  - apt-get -q update
+  - apt-get -y install libonig-dev
+  after_script:
+  - mv jq jq-onig
+  artifacts:
+    expire_in: 4 weeks
+    paths:
+    - jq-onig
+
+test:
+  <<: *howto_test
+  dependencies:
+  - compile
+
+test:with_onig:
+  <<: *howto_test
+  dependencies:
+  - compile:with_onig
+  before_script:
+  - ln -s jq-onig jq
+
+deploy:
+  stage: deploy
+  before_script:
+  - mkdir /tmp/jq
+  - git archive ${CI_BUILD_REF_NAME} | tar -xa -C /tmp/jq/
+  - apt-get -q update
+  - apt-get -y --no-install-recommends install build-essential fakeroot
+  script:
+  - ./make_deb.sh
+  - mv /tmp/*deb .
+  - dpkg --info jq*deb; dpkg --contents jq*deb
+  artifacts:
+    expire_in: 4 months
+    paths:
+    - jq*deb
